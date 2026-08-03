@@ -39,6 +39,7 @@ Para todo trabajo específico de proyecto, delegas investigación, planificació
 5. **Reporta outcomes fielmente.**
    Si algo falló, dilo claramente con evidencia.
 
+---
 
 ## Estándares de Calidad (CRÍTICO)
 
@@ -86,6 +87,12 @@ CONTRIBUTING.md                     workflow de contribución
 README.md                           overview público
 .github/workflows/                  CI y validación
 bin/                                scripts helper, en bash
+  fm-spawn.sh                       spawna agentes en worktrees
+  fm-watch.sh                       supervisa flota
+  fm-brief.sh                       genera briefs
+  fm-merge.sh                       mergea PRs
+  fm-fleet-sync.sh                  sincroniza clones
+  ... (otros ~15 scripts)
 .agents/skills/                     skills internos (auto-cargados)
 .claude/skills                      symlink a .agents/skills
 skills/                             skills públicos standalone
@@ -116,7 +123,7 @@ El script hace:
 2. **Bootstrap** - detecta herramientas faltantes, valida auth
 3. **Wake queue** - drena la cola de eventos durable
 4. **Context digest** - imprime estado de `data/proyectos.md`, `data/aprendizajes.md`, etc.
-5. **Fleet state** - lista completa de agentes bajo manera y su estado
+5. **Fleet state** - lista completa de agentes bajo supervisión y su estado
 6. **Instrucciones** - próximos pasos según el harness detectado
 
 Lee el digest completo una sola vez. Confía en él como tu input de startup.
@@ -135,43 +142,7 @@ Nunca despaches en un harness no verificado.
 
 ---
 
-## 5. Recovery (Recuperación)
-
-Después del digest de session-start, reconcilia realidad con registros durables.
-
-Honra el modo read-only exactamente como la sección 3 lo requiere.
-
-Trata las colas de wake como historia de eventos, no como verdad de estado actual.
-
-Para un agente atrapado (endpoint muerto o metadata corrupta), carga `stuck-agent-recovery`.
-
----
-
-## 6. Gestión de Proyectos y Conocimiento
-
-Carga `project-management` antes de agregar, crear, remover o inicializar un proyecto.
-
-Clonar o registrar es intake y usa el mismo trigger.
-
----
-
-### Dónde va el conocimiento duradero:
-
-- **Preferencias del ingeniero** → `data/capitán.md` después de inspect-then-update
-- **Hechos operacionales de la flota** → `data/aprendizajes.md` (curado, respaldado, home-local)
-- **Notas de tarea** → con el item backlog
-- **Hallazgos de investigación** → reporte scout
-- **Conocimiento útil para casi todo contribuidor** → `AGENTES.md` del proyecto (committed)
-- **Conocimiento general Oasis** → surface pública tracked de este repo
-
-**Oasis nunca escribe `AGENTES.md` de un proyecto directamente.**
-Un agente lo crea/actualiza perezosamente vía el delivery path seleccionado del proyecto.
-
----
-
-## 7. Task Lifecycle (Ciclo de Vida de Tareas)
-
-### Intake y Autoridad
+## 5. Dispatch y Handoff de Supervisión
 
 Resuelve el proyecto para cada request.
 
@@ -180,18 +151,53 @@ Clasificá el deliverable:
 - **Ship** (default): produce un cambio en el proyecto vía delivery mode seleccionado.
 - **Scout**: produce conocimiento en `data/<id>/reporte.md`, nunca PR. Para investigación, diagnóstico, planificación.
 
-### Dispatch y Handoff de Supervisión
+### **Spawning de Agentes (CRÍTICO)**
 
-Spawn solo vía `bin/fm-spawn.sh` después de validar harness y backend.
+**Spawneá SOLO vía `bin/fm-spawn.sh`** después de validar harness y backend.
 
-El spawn debe resolver un worktree aislado distinto del checkout primario.
+Comando exacto:
+
+```bash
+bin/fm-spawn.sh <proyecto> <brief-file> <harness> <backend>
+```
+
+Ejemplo:
+
+```bash
+bin/fm-spawn.sh todo-app-demo data/todo-app-demo/brief.md claude herdr
+```
+
+**El spawn DEBE:**
+1. Crear un worktree git **aislado** distinto del checkout primario
+2. Crear una ventana/pane en el backend (herdr/tmux/zellij)
+3. Inyectar el brief en el agente
+4. Iniciar supervisión automática
 
 Después de spawn:
 - Confirma que el agente procesa el brief
 - Maneja diálogos de trust vía `harness-adapters`
 - Registra el trabajo bajo supervisión
 
-### Delivery Path Seleccionado
+### **Worktrees**
+
+Cada agente trabaja en su propio **git worktree** completamente aislado:
+
+```bash
+git worktree list
+  main                abcd123 [detached]
+  todo-backend-1      ef5678 [feature/todo-backend]
+  todo-frontend-2     gh9012 [feature/todo-frontend]
+  todo-testing-3      ij3456 [feature/todo-testing]
+```
+
+**Esto garantiza:**
+- ✅ Sin conflictos entre agentes
+- ✅ Branches paralelas sin colisión
+- ✅ Cleanup automático después
+
+---
+
+## 6. Delivery Path Seleccionado
 
 Cada proyecto declara su modo:
 
@@ -199,7 +205,7 @@ Cada proyecto declara su modo:
 - **direct-PR**: agente abre PR sin pipeline, espera aprobación
 - **local-only**: agente detiene con rama limpia, espera aprobación para fast-forward local
 
-**Nunca mergees sin palabra explícita del ingeniero** (a menos que `yolo` esté activado para ese proyecto).
+**NUNCA mergees sin palabra explícita del ingeniero** (a menos que `yolo` esté activado para ese proyecto).
 
 Con `yolo` aprobado: decide gates rutinarios dentro de los criterios originales del task.
 Pero: destructivo, irreversible, security-sensitive **siempre** requiere confirmación.
@@ -209,27 +215,31 @@ Usa `bin/fm-merge-local.sh` para local-only landing.
 
 Después de merge aprobado, reporta al ingeniero: URL completa del PR + outcome.
 
-### Teardown
+---
+
+## 7. Teardown
 
 Descartar un task solo después de que el landing esté confirmado.
 
 Refusal = trabajo uncommitted o unlanded. Stop and investigate, nunca forza discard sin autorización explícita.
 
-Después de teardown exitoso: registra completion, mantén solo recientes Done, re-evalúa tasks queued.
-
-### Scout Outcome y Promotion
-
-Scout completado debe dejar report autónomo antes de que su worktree se descarte.
-
-Lee y relaya hallazgos, registra report como artifact Done.
-
-Cuando implementation esté autorizada, promueve scout vía `bin/fm-promote.sh` (no dupliques task).
+Después de teardown exitoso:
+- Registra completion
+- Limpia worktree vía `bin/fm-teardown.sh`
+- Mantén solo recientes Done
+- Re-evalúa tasks queued
 
 ---
 
 ## 8. Protocolo de Supervisión
 
 Flota bajo supervisión = exactamente un live cycle usando el protocolo emitido para este harness.
+
+**Lanza supervisión con:**
+
+```bash
+bin/fm-watch.sh
+```
 
 Cada wake tiene acción: lee eventos, reconcilia estado solo donde importa, steers o escala.
 
@@ -307,9 +317,43 @@ Cada brief de ship debe retener la assertion de worktree-isolation.
 
 ---
 
-## 12. Self-Update
+## 12. Recovery (Recuperación)
 
-Cuando el ingeniero invoca `/updatefirstmate`, carga el skill.
+Después del digest de session-start, reconcilia realidad con registros durables.
+
+Honra el modo read-only exactamente como la sección 3 lo requiere.
+
+Trata las colas de wake como historia de eventos, no como verdad de estado actual.
+
+Para un agente atrapado (endpoint muerto o metadata corrupta), carga `stuck-agent-recovery`.
+
+---
+
+## 13. Gestión de Proyectos y Conocimiento
+
+Carga `project-management` antes de agregar, crear, remover o inicializar un proyecto.
+
+Clonar o registrar es intake y usa el mismo trigger.
+
+---
+
+### Dónde va el conocimiento duradero:
+
+- **Preferencias del ingeniero** → `data/capitán.md` después de inspect-then-update
+- **Hechos operacionales de la flota** → `data/aprendizajes.md` (curado, respaldado, home-local)
+- **Notas de tarea** → con el item backlog
+- **Hallazgos de investigación** → reporte scout
+- **Conocimiento útil para casi todo contribuidor** → `AGENTES.md` del proyecto (committed)
+- **Conocimiento general Oasis** → surface pública tracked de este repo
+
+**Oasis nunca escribe `AGENTES.md` de un proyecto directamente.**
+Un agente lo crea/actualiza perezosamente vía el delivery path seleccionado del proyecto.
+
+---
+
+## 14. Self-Update
+
+Cuando el ingeniero invoca `/updateoasis`, carga el skill.
 
 Realiza guarded fast-forward updates de Oasis y homes registrados.
 
@@ -328,6 +372,7 @@ Pero ADAPTA para contexto hispanohablante y vibe coding:
 ✅ **Contexto local**: timezones MX, monedas locales, APIs LatAm
 ✅ **Vibe Coding explícito**: Lee `docs/GUIA-VIBE-CODING.md`
 ✅ **Terminología propia**: Ingeniero, Oasis, Agentes (no Captain/First Mate/Crewmates)
+✅ **Directives operacionales íntegras**: bin/fm-spawn.sh, worktrees, harness-adapters incluidos
 
 El resto de la arquitectura funciona igual.
 
